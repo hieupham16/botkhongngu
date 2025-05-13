@@ -7,7 +7,7 @@ const cheerio = require("cheerio");
 
 module.exports.config = {
   name: "autodownfacebook",
-  version: "1.3.0",
+  version: "1.4.0",
   hasPermssion: 0,
   credits: "Dương Trân dev & LunarKrystal",
   description: "Tự động tải video từ Facebook (cả video thường và reels) khi phát hiện link",
@@ -40,434 +40,465 @@ function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)];
 }
 
-// Phương pháp 1: Sử dụng FbDownloader.app
-async function downloadWithFbDownloaderApp(url, outputPath) {
+// Phương pháp 1: Sử dụng APi SnapSave
+async function downloadWithSnapSave(url, outputPath) {
   try {
-    console.log("Đang tải video với FbDownloader.app");
+    console.log("Đang tải video với SnapSave API");
     
-    // Bước 1: Gửi URL để lấy token và video ID
+    // Bước 1: Submit URL để lấy token
     const userAgent = getRandomUserAgent();
-    const initialResponse = await axios.get('https://fbdownloader.app/api/ajaxSearch', {
-      params: {
-        q: url,
-        lang: 'vi'
+    
+    const options = {
+      method: 'POST',
+      url: 'https://snapsave.app/action.php',
+      headers: {
+        'User-Agent': userAgent,
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'x-requested-with': 'XMLHttpRequest',
+        'origin': 'https://snapsave.app',
+        'referer': 'https://snapsave.app/'
       },
-      headers: {
-        'User-Agent': userAgent,
-        'Referer': 'https://fbdownloader.app/',
-        'Accept': 'application/json',
-        'sec-ch-ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"'
-      }
-    });
-    
-    if (!initialResponse.data || !initialResponse.data.token) {
-      throw new Error("Không thể lấy token từ FbDownloader");
-    }
-    
-    // Bước 2: Sử dụng token để lấy link tải
-    const token = initialResponse.data.token;
-    const downloadResponse = await axios.get('https://fbdownloader.app/api/ajaxConvert', {
-      params: {
-        token: token,
-        lang: 'vi'
-      },
-      headers: {
-        'User-Agent': userAgent,
-        'Referer': 'https://fbdownloader.app/',
-        'Accept': 'application/json',
-        'sec-ch-ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"'
-      }
-    });
-    
-    if (!downloadResponse.data || !downloadResponse.data.links || downloadResponse.data.links.length === 0) {
-      throw new Error("Không tìm thấy link tải từ FbDownloader.app");
-    }
-    
-    // Tìm link video HD (hoặc lấy SD nếu không có HD)
-    let downloadLink = null;
-    for (const link of downloadResponse.data.links) {
-      if (link.quality === 'hd' && link.url) {
-        downloadLink = link.url;
-        break;
-      } else if (link.quality === 'sd' && link.url) {
-        downloadLink = link.url;
-      }
-    }
-    
-    if (!downloadLink) {
-      throw new Error("Không tìm thấy link tải HD hoặc SD");
-    }
-    
-    // Bước 3: Tải video
-    const videoResponse = await axios({
-      method: 'get',
-      url: downloadLink,
-      responseType: 'arraybuffer',
-      timeout: 60000,
-      headers: {
-        'User-Agent': userAgent,
-        'Referer': 'https://fbdownloader.app/'
-      }
-    });
-    
-    fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
-    console.log("Tải video hoàn tất qua FbDownloader.app");
-    
-    return {
-      success: true,
-      title: downloadResponse.data.title || "Video Facebook",
-      quality: downloadLink.includes('hd=1') ? 'HD' : 'SD'
+      data: `url=${encodeURIComponent(url)}`
     };
-  } catch (error) {
-    console.error("Lỗi FbDownloader.app:", error.message);
-    throw error;
-  }
-}
-
-// Phương pháp 2: Sử dụng GetFVid
-async function downloadWithGetFVid(url, outputPath) {
-  try {
-    console.log("Đang tải video với GetFVid");
     
-    // Bước 1: Submit URL để lấy kết quả
-    const userAgent = getRandomUserAgent();
-    const formData = new URLSearchParams();
-    formData.append('url', url);
+    const response = await axios(options);
     
-    const response = await axios.post('https://www.getfvid.com/downloader', formData, {
-      headers: {
-        'User-Agent': userAgent,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Origin': 'https://www.getfvid.com',
-        'Referer': 'https://www.getfvid.com/',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
-      }
-    });
+    if (!response.data) {
+      throw new Error("SnapSave không trả về dữ liệu");
+    }
     
-    // Bước 2: Phân tích HTML để tìm link tải HD
-    const $ = cheerio.load(response.data);
+    // Phân tích kết quả HTML
+    const html = response.data.toString();
+    const $ = cheerio.load(html);
+    
     let downloadLink = null;
-    let videoTitle = $('h5.card-title').text().trim() || "Video Facebook";
+    let videoTitle = "Video Facebook";
     
-    // Tìm link video HD (nếu có) hoặc SD
-    $('.btns-download .btn.btn-primary').each((index, element) => {
-      const text = $(element).text().trim();
-      const link = $(element).attr('href');
-      
-      if (text.includes('HD')) {
-        downloadLink = link;
-        return false; // break the loop
-      } else if (text.includes('SD') && !downloadLink) {
-        downloadLink = link;
-      }
-    });
-    
-    if (!downloadLink) {
-      throw new Error("Không tìm thấy link tải từ GetFVid");
+    // Tìm tiêu đề video
+    const titleMatch = html.match(/<div class="video-title">(.*?)<\/div>/);
+    if (titleMatch && titleMatch[1]) {
+      videoTitle = titleMatch[1].trim();
     }
     
-    // Bước 3: Tải video
-    const videoResponse = await axios({
-      method: 'get',
-      url: downloadLink,
-      responseType: 'arraybuffer',
-      timeout: 60000,
-      headers: {
-        'User-Agent': userAgent,
-        'Referer': 'https://www.getfvid.com/'
-      }
-    });
-    
-    fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
-    console.log("Tải video hoàn tất qua GetFVid");
-    
-    return {
-      success: true,
-      title: videoTitle,
-      quality: downloadLink.includes('hd=1') ? 'HD' : 'SD'
-    };
-  } catch (error) {
-    console.error("Lỗi GetFVid:", error.message);
-    throw error;
-  }
-}
-
-// Phương pháp 3: Sử dụng FBDownloader.net
-async function downloadWithFBDownloaderNet(url, outputPath) {
-  try {
-    console.log("Đang tải video với FBDownloader.net");
-    
-    // Bước 1: Submit URL để lấy kết quả
-    const userAgent = getRandomUserAgent();
-    const formData = new URLSearchParams();
-    formData.append('url', url);
-    
-    const response = await axios.post('https://fbdownloader.net/process-link', formData, {
-      headers: {
-        'User-Agent': userAgent,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Origin': 'https://fbdownloader.net',
-        'Referer': 'https://fbdownloader.net/'
-      }
-    });
-    
-    if (!response.data || !response.data.success) {
-      throw new Error("FBDownloader.net không xử lý được link");
-    }
-    
-    // Bước 2: Parse HTML để lấy link tải
-    const $ = cheerio.load(response.data.data);
-    let downloadLink = null;
-    
-    // Ưu tiên link HD trước
-    $('a.download-link').each((index, element) => {
-      const link = $(element).attr('href');
-      const quality = $(element).text().trim();
-      
-      if (quality.includes('HD') || quality.includes('720p')) {
-        downloadLink = link;
-        return false; // break the loop
-      } else if (quality.includes('SD') && !downloadLink) {
-        downloadLink = link;
-      }
-    });
-    
-    if (!downloadLink) {
-      throw new Error("Không tìm thấy link tải từ FBDownloader.net");
-    }
-    
-    // Bước 3: Tải video
-    const videoResponse = await axios({
-      method: 'get',
-      url: downloadLink,
-      responseType: 'arraybuffer',
-      timeout: 60000,
-      headers: {
-        'User-Agent': userAgent,
-        'Referer': 'https://fbdownloader.net/'
-      }
-    });
-    
-    fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
-    console.log("Tải video hoàn tất qua FBDownloader.net");
-    
-    // Lấy tiêu đề video nếu có
-    const videoTitle = $('div.titre').text().trim() || "Video Facebook";
-    
-    return {
-      success: true,
-      title: videoTitle,
-      quality: downloadLink.includes('hd=1') ? 'HD' : 'SD'
-    };
-  } catch (error) {
-    console.error("Lỗi FBDownloader.net:", error.message);
-    throw error;
-  }
-}
-
-// Phương pháp 4: Sử dụng FBVideo
-async function downloadWithFBVideo(url, outputPath) {
-  return new Promise((resolve, reject) => {
-    try {
-      console.log("Đang tải video với FBVideo");
-      
-      // Tạo một cookie ngẫu nhiên để tránh bị phát hiện là bot
-      const userAgent = getRandomUserAgent();
-      const randomCookie = `sb=${crypto.randomBytes(12).toString('hex')}; datr=${crypto.randomBytes(12).toString('hex')}; locale=en_US`;
-      
-      // Thực hiện request đến Facebook với tham số mobile_iframe=1 để lấy mobile version
-      const fbUrl = url.includes('?') ? `${url}&mobile_iframe=1` : `${url}?mobile_iframe=1`;
-      
-      request({
-        url: fbUrl,
-        headers: {
-          'User-Agent': userAgent, 
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Connection': 'keep-alive',
-          'Upgrade-Insecure-Requests': '1',
-          'Cookie': randomCookie
-        }
-      }, (error, response, body) => {
-        if (error) {
-          return reject(new Error(`Lỗi khi tải trang Facebook: ${error.message}`));
-        }
-        
-        if (response.statusCode !== 200) {
-          return reject(new Error(`Lỗi khi tải trang Facebook: ${response.statusCode}`));
-        }
-        
-        try {
-          console.log("Đã nhận phản hồi từ Facebook, đang phân tích...");
-          
-          // Lấy tiêu đề video
-          const $ = cheerio.load(body);
-          let videoTitle = $('meta[property="og:title"]').attr('content') || "Video Facebook";
-          
-          // Tìm URL video trong file HTML (mobile version thường hiển thị video trực tiếp)
-          let videoURL = null;
-          
-          // Phương pháp 1: Tìm trong thẻ meta
-          videoURL = $('meta[property="og:video:url"]').attr('content') || 
-                    $('meta[property="og:video"]').attr('content') || 
-                    $('meta[property="og:video:secure_url"]').attr('content');
-          
-          // Phương pháp 2: Tìm trong thẻ video
-          if (!videoURL) {
-            const videoElement = $('video source').attr('src');
-            if (videoElement) {
-              videoURL = videoElement;
-            }
-          }
-          
-          // Phương pháp 3: Tìm trong các script
-          if (!videoURL) {
-            const scriptTags = $('script').map((i, el) => $(el).html()).get();
-            
-            for (const script of scriptTags) {
-              // Tìm các chuỗi có dạng "videoUrl":"http...mp4"
-              const urlMatches = script.match(/"(?:playable_url(?:_quality_hd)?|video_url|videoURL|video_data|video)"\s*:\s*"([^"]+\.mp4[^"]*)"/);
-              if (urlMatches && urlMatches[1]) {
-                videoURL = urlMatches[1].replace(/\\/g, '');
-                break;
-              }
-              
-              // Tìm theo cấu trúc JSON
-              if (script.includes('videoData') || script.includes('video_data')) {
-                try {
-                  // Tìm đoạn JSON chứa thông tin video
-                  const jsonStart = script.indexOf('{');
-                  const jsonEnd = script.lastIndexOf('}') + 1;
-                  
-                  if (jsonStart >= 0 && jsonEnd > jsonStart) {
-                    const jsonStr = script.substring(jsonStart, jsonEnd);
-                    const jsonData = JSON.parse(jsonStr);
-                    
-                    if (jsonData.videoData && jsonData.videoData.video_url) {
-                      videoURL = jsonData.videoData.video_url;
-                      break;
-                    } else if (jsonData.video_data && jsonData.video_data.progressive) {
-                      // Lấy link chất lượng cao nhất
-                      const progressive = jsonData.video_data.progressive;
-                      if (progressive && progressive.length > 0) {
-                        progressive.sort((a, b) => (b.width || 0) - (a.width || 0));
-                        videoURL = progressive[0].url;
-                        break;
-                      }
-                    }
-                  }
-                } catch (e) {
-                  // Bỏ qua lỗi phân tích JSON
-                  console.log("Lỗi phân tích JSON:", e.message);
-                }
-              }
-            }
-          }
-          
-          if (!videoURL) {
-            return reject(new Error("Không tìm thấy URL video trong mã nguồn trang"));
-          }
-          
-          // Giải mã URL (nếu cần)
-          videoURL = videoURL.replace(/\\u0025/g, '%')
-                           .replace(/\\u002F/g, '/')
-                           .replace(/\\u003A/g, ':')
-                           .replace(/\\u003F/g, '?')
-                           .replace(/\\u003D/g, '=')
-                           .replace(/\\u0026/g, '&')
-                           .replace(/\\/g, '');
-          
-          console.log(`Đã tìm thấy URL video: ${videoURL}`);
-          
-          // Đôi khi URL không có giao thức, thêm vào nếu cần
-          if (videoURL.startsWith('//')) {
-            videoURL = 'https:' + videoURL;
-          }
-          
-          // Tải video
-          request({
-            url: videoURL,
-            headers: {
-              'User-Agent': userAgent,
-              'Referer': url
-            }
-          })
-          .on('error', function(err) {
-            reject(new Error(`Lỗi khi tải video: ${err.message}`));
-          })
-          .pipe(fs.createWriteStream(outputPath))
-          .on('close', function() {
-            console.log("Tải video hoàn tất bằng phương pháp FBVideo");
-            resolve({
-              success: true,
-              title: videoTitle
-            });
-          });
-        } catch (err) {
-          reject(new Error(`Lỗi khi phân tích mã nguồn: ${err.message}`));
+    // Tìm link tải HD trước, nếu không có thì lấy SD
+    if (html.includes('id="download-section"')) {
+      $('a.download-link').each((i, el) => {
+        const quality = $(el).text().trim();
+        const link = $(el).attr('href');
+        if (quality.includes('HD') && link) {
+          downloadLink = link;
+          return false; // break loop
+        } else if (!downloadLink && link) {
+          downloadLink = link;
         }
       });
-    } catch (error) {
-      reject(new Error(`Lỗi FBVideo: ${error.message}`));
     }
-  });
+    
+    // Thử tìm trong cấu trúc HTML khác
+    if (!downloadLink) {
+      $('table.table a').each((i, el) => {
+        const link = $(el).attr('href');
+        const quality = $(el).text().trim();
+        if (quality.includes('HD') && link) {
+          downloadLink = link;
+          return false; // break loop
+        } else if (!downloadLink && link) {
+          downloadLink = link;
+        }
+      });
+    }
+    
+    // Nếu không tìm thấy, thử regex
+    if (!downloadLink) {
+      const linkMatches = html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/g);
+      if (linkMatches && linkMatches.length > 0) {
+        const link = linkMatches[0].replace('href="', '').replace('"', '');
+        downloadLink = link;
+      }
+    }
+    
+    if (!downloadLink) {
+      throw new Error("Không tìm thấy link tải từ SnapSave");
+    }
+    
+    // Bước 3: Tải video
+    const videoResponse = await axios({
+      method: 'get',
+      url: downloadLink,
+      responseType: 'arraybuffer',
+      timeout: 60000,
+      headers: {
+        'User-Agent': userAgent,
+        'Referer': 'https://snapsave.app/'
+      }
+    });
+    
+    fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
+    console.log("Tải video hoàn tất qua SnapSave");
+    
+    return {
+      success: true,
+      title: videoTitle,
+      quality: downloadLink.includes('hd=1') ? 'HD' : 'SD'
+    };
+  } catch (error) {
+    console.error("Lỗi SnapSave:", error.message);
+    throw error;
+  }
+}
+
+// Phương pháp 2: Sử dụng SaveFrom
+async function downloadWithSaveFrom(url, outputPath) {
+  try {
+    console.log("Đang tải video với SaveFrom API");
+    
+    // Bước 1: Lấy thông tin video
+    const userAgent = getRandomUserAgent();
+    const options = {
+      method: 'POST',
+      url: 'https://v18.x2download.com/api/ajaxSearch',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'User-Agent': userAgent,
+        'Origin': 'https://en.savefrom.net',
+        'Referer': 'https://en.savefrom.net/'
+      },
+      data: `q=${encodeURIComponent(url)}`
+    };
+    
+    const response = await axios(options);
+    
+    if (!response.data || !response.data.links || response.data.links.length === 0) {
+      throw new Error("SaveFrom không trả về links");
+    }
+    
+    // Tìm link tải tốt nhất
+    let downloadLink = null;
+    let videoTitle = response.data.title || "Video Facebook";
+    let quality = "SD";
+    
+    for (const link of response.data.links) {
+      if (link.type === "mp4") {
+        if (!downloadLink || link.quality > quality) {
+          downloadLink = link.url;
+          quality = link.quality || "SD";
+        }
+      }
+    }
+    
+    if (!downloadLink) {
+      throw new Error("Không tìm thấy link tải từ SaveFrom");
+    }
+    
+    // Bước 2: Tải video
+    const videoResponse = await axios({
+      method: 'get',
+      url: downloadLink,
+      responseType: 'arraybuffer',
+      timeout: 60000,
+      headers: {
+        'User-Agent': userAgent,
+        'Referer': 'https://en.savefrom.net/'
+      }
+    });
+    
+    fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
+    console.log("Tải video hoàn tất qua SaveFrom");
+    
+    return {
+      success: true,
+      title: videoTitle,
+      quality: quality
+    };
+  } catch (error) {
+    console.error("Lỗi SaveFrom:", error.message);
+    throw error;
+  }
+}
+
+// Phương pháp 3: Sử dụng SSSTIK API
+async function downloadWithSSSTIK(url, outputPath) {
+  try {
+    console.log("Đang tải video với SSSTIK API");
+    
+    // Bước 1: Lấy token và cookies
+    const userAgent = getRandomUserAgent();
+    const websiteResponse = await axios.get('https://ssstik.io/en', {
+      headers: {
+        'User-Agent': userAgent
+      }
+    });
+    
+    // Parse HTML để lấy token
+    const $ = cheerio.load(websiteResponse.data);
+    const tt = $('input[name="tt"]').val();
+    
+    if (!tt) {
+      throw new Error("Không lấy được token từ SSSTIK");
+    }
+    
+    // Lấy cookies
+    const cookies = websiteResponse.headers['set-cookie'] ? 
+      websiteResponse.headers['set-cookie'].join('; ') : '';
+    
+    // Bước 2: Gửi yêu cầu tải
+    const formData = new URLSearchParams();
+    formData.append('url', url);
+    formData.append('tt', tt);
+    
+    const downloadResponse = await axios.post('https://ssstik.io/abc?url=dl', formData, {
+      headers: {
+        'User-Agent': userAgent,
+        'Cookie': cookies,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Origin': 'https://ssstik.io',
+        'Referer': 'https://ssstik.io/en'
+      }
+    });
+    
+    // Parse HTML kết quả để tìm link download
+    const resultHtml = downloadResponse.data;
+    const $result = cheerio.load(resultHtml);
+    
+    let downloadLink = null;
+    let videoTitle = "Video Facebook";
+    
+    // Tìm link tải và tiêu đề
+    downloadLink = $result('a.download_link').attr('href');
+    videoTitle = $result('.result_heading').text().trim() || videoTitle;
+    
+    if (!downloadLink) {
+      throw new Error("Không tìm thấy link tải từ SSSTIK");
+    }
+    
+    // Bước 3: Tải video
+    const videoResponse = await axios({
+      method: 'get',
+      url: downloadLink,
+      responseType: 'arraybuffer',
+      timeout: 60000,
+      headers: {
+        'User-Agent': userAgent,
+        'Referer': 'https://ssstik.io/'
+      }
+    });
+    
+    fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
+    console.log("Tải video hoàn tất qua SSSTIK");
+    
+    return {
+      success: true,
+      title: videoTitle,
+      quality: "HD"
+    };
+  } catch (error) {
+    console.error("Lỗi SSSTIK:", error.message);
+    throw error;
+  }
+}
+
+// Phương pháp 4: Sử dụng FbDown.net
+async function downloadWithFbDown(url, outputPath) {
+  try {
+    console.log("Đang tải video với FbDown.net");
+    
+    // Bước 1: Submit URL để lấy kết quả
+    const userAgent = getRandomUserAgent();
+    const websiteUrl = 'https://www.fbdown.net/download.php';
+    
+    const response = await axios.get(websiteUrl, {
+      params: { url: url },
+      headers: {
+        'User-Agent': userAgent,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Referer': 'https://www.fbdown.net/'
+      }
+    });
+    
+    // Bước 2: Parse HTML để tìm link tải
+    const $ = cheerio.load(response.data);
+    let downloadLink = null;
+    let videoTitle = $('div.video-title').text().trim() || "Video Facebook";
+    
+    // Tìm link HD trước, nếu không có thì SD
+    const hdLink = $('a.btn-primary[download][href*="https"]').attr('href');
+    const sdLink = $('a.btn-secondary[download][href*="https"]').attr('href');
+    
+    if (hdLink) {
+      downloadLink = hdLink;
+    } else if (sdLink) {
+      downloadLink = sdLink;
+    }
+    
+    if (!downloadLink) {
+      throw new Error("Không tìm thấy link tải từ FbDown.net");
+    }
+    
+    // Bước 3: Tải video
+    const videoResponse = await axios({
+      method: 'get',
+      url: downloadLink,
+      responseType: 'arraybuffer',
+      timeout: 60000,
+      headers: {
+        'User-Agent': userAgent,
+        'Referer': 'https://www.fbdown.net/'
+      }
+    });
+    
+    fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
+    console.log("Tải video hoàn tất qua FbDown.net");
+    
+    return {
+      success: true,
+      title: videoTitle,
+      quality: hdLink ? 'HD' : 'SD'
+    };
+  } catch (error) {
+    console.error("Lỗi FbDown.net:", error.message);
+    throw error;
+  }
+}
+
+// Phương pháp 5: Sử dụng dịch vụ FBvideodownloader
+async function downloadWithFBDownloader(url, outputPath) {
+  try {
+    console.log("Đang tải video với dịch vụ FBvideodownloader");
+    
+    // CORS proxy để vượt qua hạn chế
+    const corsProxy = 'https://corsproxy.io/?';
+    const encodedUrl = encodeURIComponent(url);
+    const serviceUrl = 'https://fbvideodownloader.io/facebook-reels-video-downloader';
+    
+    const userAgent = getRandomUserAgent();
+    
+    // Bước 1: Submit URL để lấy kết quả
+    const formData = new URLSearchParams();
+    formData.append('url', url);
+    
+    const response = await axios.post(corsProxy + encodeURIComponent(serviceUrl), formData, {
+      headers: {
+        'User-Agent': userAgent,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Origin': 'https://fbvideodownloader.io',
+        'Referer': 'https://fbvideodownloader.io/facebook-reels-video-downloader'
+      }
+    });
+    
+    // Bước 2: Parse HTML để tìm link tải
+    const $ = cheerio.load(response.data);
+    let downloadLink = null;
+    let videoTitle = "Video Facebook";
+    
+    // Tìm tiêu đề video
+    videoTitle = $('h1.text-center').text().trim() || videoTitle;
+    
+    // Tìm link HD trước, nếu không có thì tìm SD
+    $('.clip a.btn').each((i, el) => {
+      const link = $(el).attr('href');
+      const quality = $(el).text().trim();
+      
+      if (quality.includes('HD') && link && link.includes('https')) {
+        downloadLink = link;
+        return false; // break loop
+      } else if (!downloadLink && link && link.includes('https')) {
+        downloadLink = link;
+      }
+    });
+    
+    if (!downloadLink) {
+      throw new Error("Không tìm thấy link tải từ FBvideodownloader");
+    }
+    
+    // Bước 3: Tải video
+    const videoResponse = await axios({
+      method: 'get',
+      url: downloadLink,
+      responseType: 'arraybuffer',
+      timeout: 60000,
+      headers: {
+        'User-Agent': userAgent,
+        'Referer': 'https://fbvideodownloader.io/'
+      }
+    });
+    
+    fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
+    console.log("Tải video hoàn tất qua FBvideodownloader");
+    
+    return {
+      success: true,
+      title: videoTitle,
+      quality: downloadLink.includes('hd=1') ? 'HD' : 'SD'
+    };
+  } catch (error) {
+    console.error("Lỗi FBvideodownloader:", error.message);
+    throw error;
+  }
 }
 
 // Hàm tổng hợp tải video Facebook sử dụng nhiều phương pháp dự phòng
 async function downloadFacebookVideo(videoUrl, outputPath) {
   let errors = [];
   
-  // Kiểm tra URL - đảm bảo sửa đổi URL để có thể truy cập được trên mobile
-  let processedUrl = videoUrl;
+  // Làm sạch URL và thêm 'https://' nếu cần
+  let processedUrl = videoUrl.trim();
+  if (!processedUrl.startsWith('http')) {
+    processedUrl = 'https://' + processedUrl;
+  }
   
-  // Nếu là URL reel, thêm tham số để dễ truy cập
-  if (processedUrl.includes('facebook.com/reel/')) {
-    processedUrl = processedUrl.includes('?') ? 
-      `${processedUrl}&_rdr` : 
-      `${processedUrl}?_rdr`;
+  // Đảm bảo URL hợp lệ
+  try {
+    new URL(processedUrl);
+  } catch (e) {
+    throw new Error(`URL không hợp lệ: ${e.message}`);
   }
   
   console.log(`URL được xử lý: ${processedUrl}`);
   
-  // Phương pháp 1: FBVideo - Truy cập trực tiếp vào Facebook
+  // Phương pháp 1: SnapSave API
   try {
-    console.log("Phương pháp 1: FBVideo - Truy cập trực tiếp");
-    return await downloadWithFBVideo(processedUrl, outputPath);
+    console.log("Phương pháp 1: SnapSave API");
+    return await downloadWithSnapSave(processedUrl, outputPath);
   } catch (error) {
     console.log("Phương pháp 1 thất bại:", error.message);
-    errors.push(`FBVideo: ${error.message}`);
+    errors.push(`SnapSave: ${error.message}`);
   }
   
-  // Phương pháp 2: FbDownloader.app
+  // Phương pháp 2: SaveFrom
   try {
-    console.log("Phương pháp 2: FbDownloader.app");
-    return await downloadWithFbDownloaderApp(processedUrl, outputPath);
+    console.log("Phương pháp 2: SaveFrom");
+    return await downloadWithSaveFrom(processedUrl, outputPath);
   } catch (error) {
     console.log("Phương pháp 2 thất bại:", error.message);
-    errors.push(`FbDownloader.app: ${error.message}`);
+    errors.push(`SaveFrom: ${error.message}`);
   }
   
-  // Phương pháp 3: GetFVid
+  // Phương pháp 3: SSSTIK
   try {
-    console.log("Phương pháp 3: GetFVid");
-    return await downloadWithGetFVid(processedUrl, outputPath);
+    console.log("Phương pháp 3: SSSTIK");
+    return await downloadWithSSSTIK(processedUrl, outputPath);
   } catch (error) {
     console.log("Phương pháp 3 thất bại:", error.message);
-    errors.push(`GetFVid: ${error.message}`);
+    errors.push(`SSSTIK: ${error.message}`);
   }
   
-  // Phương pháp 4: FBDownloader.net
+  // Phương pháp 4: FbDown.net
   try {
-    console.log("Phương pháp 4: FBDownloader.net");
-    return await downloadWithFBDownloaderNet(processedUrl, outputPath);
+    console.log("Phương pháp 4: FbDown.net");
+    return await downloadWithFbDown(processedUrl, outputPath);
   } catch (error) {
     console.log("Phương pháp 4 thất bại:", error.message);
-    errors.push(`FBDownloader.net: ${error.message}`);
+    errors.push(`FbDown.net: ${error.message}`);
+  }
+  
+  // Phương pháp 5: FBvideodownloader
+  try {
+    console.log("Phương pháp 5: FBvideodownloader");
+    return await downloadWithFBDownloader(processedUrl, outputPath);
+  } catch (error) {
+    console.log("Phương pháp 5 thất bại:", error.message);
+    errors.push(`FBvideodownloader: ${error.message}`);
   }
   
   // Nếu tất cả các phương pháp đều thất bại, ném lỗi tổng hợp
