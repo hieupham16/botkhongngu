@@ -119,7 +119,10 @@ async function downloadWithFDOWN(url, outputPath) {
     // Gọi API lấy link tải
     const response = await axios.get(`https://fdown.net/download.php?url=${encodeURIComponent(url)}`, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Referer': 'https://fdown.net/'
       }
     });
     
@@ -140,7 +143,8 @@ async function downloadWithFDOWN(url, outputPath) {
       responseType: 'arraybuffer',
       timeout: 60000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Referer': 'https://fdown.net/'
       }
     });
     
@@ -157,36 +161,151 @@ async function downloadWithFDOWN(url, outputPath) {
   }
 }
 
+// Phương pháp 4: Sử dụng API SaveFrom
+async function downloadWithSaveFrom(url, outputPath) {
+  try {
+    console.log("Đang tải video với SaveFrom API");
+    
+    // API mới từ SaveFrom
+    const apiUrl = `https://worker-syntax-dawn-95c9.lulardev.workers.dev/sf?url=${encodeURIComponent(url)}`;
+    
+    const response = await axios.get(apiUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+      },
+      timeout: 30000
+    });
+    
+    if (!response.data || !response.data.url) {
+      throw new Error("SaveFrom API không trả về link tải");
+    }
+    
+    const downloadLink = response.data.url;
+    
+    // Tải video từ link
+    const videoResponse = await axios({
+      method: 'get',
+      url: downloadLink,
+      responseType: 'arraybuffer',
+      timeout: 60000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+      }
+    });
+    
+    fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
+    console.log("Tải video hoàn tất qua SaveFrom API");
+    
+    return {
+      success: true,
+      title: response.data.meta && response.data.meta.title ? response.data.meta.title : "Video Facebook"
+    };
+  } catch (error) {
+    console.error("Lỗi SaveFrom API:", error.message);
+    throw error;
+  }
+}
+
+// Phương pháp 5: Sử dụng API DownTik
+async function downloadWithDownTik(url, outputPath) {
+  try {
+    console.log("Đang tải video với DownTik API");
+    
+    // Chuẩn bị request đến API DownTik
+    const response = await axios.post('https://downtik.net/API/reels', 
+      `URL=${encodeURIComponent(url)}`,
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+          'Origin': 'https://downtik.net',
+          'Referer': 'https://downtik.net/'
+        }
+      }
+    );
+    
+    if (!response.data || !response.data.videoLinks || response.data.videoLinks.length === 0) {
+      throw new Error("DownTik API không trả về link tải");
+    }
+    
+    // Chọn link tải chất lượng cao nhất
+    const downloadLink = response.data.videoLinks[0].url;
+    
+    // Tải video từ link
+    const videoResponse = await axios({
+      method: 'get',
+      url: downloadLink,
+      responseType: 'arraybuffer',
+      timeout: 60000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+      }
+    });
+    
+    fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
+    console.log("Tải video hoàn tất qua DownTik API");
+    
+    return {
+      success: true,
+      title: response.data.title || "Video Facebook"
+    };
+  } catch (error) {
+    console.error("Lỗi DownTik API:", error.message);
+    throw error;
+  }
+}
+
 // Hàm tổng hợp tải video Facebook sử dụng nhiều phương pháp dự phòng
 async function downloadFacebookVideo(videoUrl, outputPath) {
-  let lastError = null;
+  let errors = [];
   
-  // Phương pháp 1: Sử dụng FB Downloader API
+  // Phương pháp 1: Sử dụng SaveFrom (phương pháp mới, không yêu cầu API key)
   try {
-    return await downloadWithFBDown(videoUrl, outputPath);
+    console.log("Phương pháp 1: SaveFrom API");
+    return await downloadWithSaveFrom(videoUrl, outputPath);
   } catch (error) {
-    console.log("Phương pháp 1 thất bại, đang thử phương pháp 2...");
-    lastError = error;
+    console.log("Phương pháp 1 thất bại:", error.message);
+    errors.push(`SaveFrom: ${error.message}`);
   }
   
-  // Phương pháp 2: Sử dụng API thay thế
+  // Phương pháp 2: Sử dụng FDOWN
   try {
-    return await downloadWithAlternativeAPI(videoUrl, outputPath);
-  } catch (error) {
-    console.log("Phương pháp 2 thất bại, đang thử phương pháp 3...");
-    lastError = error;
-  }
-  
-  // Phương pháp 3: Sử dụng FDOWN API
-  try {
+    console.log("Phương pháp 2: FDOWN API");
     return await downloadWithFDOWN(videoUrl, outputPath);
   } catch (error) {
-    console.log("Phương pháp 3 thất bại");
-    lastError = error;
+    console.log("Phương pháp 2 thất bại:", error.message);
+    errors.push(`FDOWN: ${error.message}`);
   }
   
-  // Nếu tất cả các phương pháp đều thất bại, ném lỗi cuối cùng
-  throw lastError || new Error("Không thể tải video Facebook");
+  // Phương pháp 3: Sử dụng DownTik
+  try {
+    console.log("Phương pháp 3: DownTik API");
+    return await downloadWithDownTik(videoUrl, outputPath);
+  } catch (error) {
+    console.log("Phương pháp 3 thất bại:", error.message);
+    errors.push(`DownTik: ${error.message}`);
+  }
+  
+  // Phương pháp 4: Sử dụng FB Downloader API (RapidAPI)
+  try {
+    console.log("Phương pháp 4: FB Downloader API");
+    return await downloadWithFBDown(videoUrl, outputPath);
+  } catch (error) {
+    console.log("Phương pháp 4 thất bại:", error.message);
+    errors.push(`FB Downloader: ${error.message}`);
+  }
+  
+  // Phương pháp 5: Sử dụng API thay thế (RapidAPI)
+  try {
+    console.log("Phương pháp 5: API thay thế");
+    return await downloadWithAlternativeAPI(videoUrl, outputPath);
+  } catch (error) {
+    console.log("Phương pháp 5 thất bại:", error.message);
+    errors.push(`API thay thế: ${error.message}`);
+  }
+  
+  // Nếu tất cả các phương pháp đều thất bại, ném lỗi tổng hợp
+  throw new Error(`Không thể tải video Facebook sau khi thử tất cả các phương pháp. Chi tiết lỗi: ${errors.join(', ')}`);
 }
 
 module.exports.handleEvent = async function({ api, event }) {
