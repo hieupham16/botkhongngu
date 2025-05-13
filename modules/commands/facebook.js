@@ -40,6 +40,124 @@ function getRandomUserAgent() {
   return userAgents[Math.floor(Math.random() * userAgents.length)];
 }
 
+// Phương pháp 0: Sử dụng API đơn giản
+async function downloadWithSimpleAPI(url, outputPath) {
+  try {
+    console.log("Đang tải video với Simple API");
+    
+    // Làm sạch URL
+    let cleanUrl = url.trim();
+    if (!cleanUrl.startsWith('http')) {
+      cleanUrl = 'https://' + cleanUrl;
+    }
+    
+    // Mã hóa URL để sử dụng trong API
+    const encodedUrl = encodeURIComponent(cleanUrl);
+    
+    // Danh sách các API đơn giản để thử
+    const apiEndpoints = [
+      `https://api.qweb.lol/download?url=${encodedUrl}`,
+      `https://api.onlinevideoconverter.pro/api/convert?url=${encodedUrl}`,
+      `https://api-download.tubeflix.co/facebook?url=${encodedUrl}`
+    ];
+    
+    let lastError = null;
+    let downloadLink = null;
+    let videoTitle = "Video Facebook";
+    
+    // Thử từng API cho đến khi tìm thấy một API hoạt động
+    for (const apiUrl of apiEndpoints) {
+      try {
+        console.log(`Đang thử với API: ${apiUrl}`);
+        
+        const response = await axios.get(apiUrl, {
+          headers: {
+            'User-Agent': getRandomUserAgent(),
+            'Accept': 'application/json'
+          },
+          timeout: 15000 // 15 giây timeout
+        });
+        
+        if (response.data) {
+          // Cấu trúc phản hồi có thể khác nhau giữa các API
+          if (response.data.url || response.data.download || response.data.links || response.data.data) {
+            // API thứ nhất
+            if (response.data.url) {
+              downloadLink = response.data.url;
+              videoTitle = response.data.title || videoTitle;
+            } 
+            // API thứ hai
+            else if (response.data.download) {
+              downloadLink = response.data.download;
+              videoTitle = response.data.title || videoTitle;
+            }
+            // API thứ ba
+            else if (response.data.links && response.data.links.length > 0) {
+              // Tìm link chất lượng cao nhất
+              const hdLinks = response.data.links.filter(link => 
+                link.quality && (link.quality.includes('hd') || link.quality.includes('HD'))
+              );
+              
+              if (hdLinks.length > 0) {
+                downloadLink = hdLinks[0].url;
+              } else if (response.data.links.length > 0) {
+                downloadLink = response.data.links[0].url;
+              }
+              
+              videoTitle = response.data.title || videoTitle;
+            }
+            // API thứ tư
+            else if (response.data.data && response.data.data.url) {
+              downloadLink = response.data.data.url;
+              videoTitle = response.data.data.title || videoTitle;
+            }
+            
+            if (downloadLink) {
+              console.log(`Đã tìm thấy link tải: ${downloadLink}`);
+              break;
+            }
+          }
+        }
+      } catch (error) {
+        console.log(`API ${apiUrl} bị lỗi: ${error.message}`);
+        lastError = error;
+      }
+    }
+    
+    if (!downloadLink) {
+      throw new Error("Không tìm thấy link tải từ tất cả các API đơn giản");
+    }
+    
+    // Tải video
+    console.log("Bắt đầu tải video...");
+    const videoResponse = await axios({
+      method: 'get',
+      url: downloadLink,
+      responseType: 'arraybuffer',
+      timeout: 60000,
+      headers: {
+        'User-Agent': getRandomUserAgent(),
+        'Accept': '*/*',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Referer': 'https://facebook.com/'
+      }
+    });
+    
+    fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
+    console.log("Tải video hoàn tất qua Simple API");
+    
+    return {
+      success: true,
+      title: videoTitle,
+      quality: 'HD'
+    };
+  } catch (error) {
+    console.error("Lỗi Simple API:", error.message);
+    throw error;
+  }
+}
+
 // Phương pháp 1: Sử dụng APi SnapSave
 async function downloadWithSnapSave(url, outputPath) {
   try {
@@ -455,6 +573,15 @@ async function downloadFacebookVideo(videoUrl, outputPath) {
   }
   
   console.log(`URL được xử lý: ${processedUrl}`);
+  
+  // Phương pháp 0: Simple API
+  try {
+    console.log("Phương pháp 0: Simple API");
+    return await downloadWithSimpleAPI(processedUrl, outputPath);
+  } catch (error) {
+    console.log("Phương pháp 0 thất bại:", error.message);
+    errors.push(`Simple API: ${error.message}`);
+  }
   
   // Phương pháp 1: SnapSave API
   try {
