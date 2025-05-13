@@ -2,19 +2,23 @@ const axios = require("axios");
 const fs = require("fs-extra");
 const path = require("path");
 const crypto = require("crypto");
+const request = require("request");
+const cheerio = require("cheerio");
 
 module.exports.config = {
   name: "autodownfacebook",
-  version: "1.1.0",
+  version: "1.2.0",
   hasPermssion: 0,
-  credits: "Dương Trân dev",
+  credits: "Dương Trân dev & LunarKrystal",
   description: "Tự động tải video từ Facebook (cả video thường và reels) khi phát hiện link",
   commandCategory: "Tiện ích",
   usages: "",
   cooldowns: 5,
   dependencies: {
     "axios": "",
-    "fs-extra": ""
+    "fs-extra": "",
+    "request": "",
+    "cheerio": ""
   }
 };
 
@@ -23,161 +27,137 @@ function generateRandomId() {
   return crypto.randomBytes(8).toString("hex");
 }
 
-// Phương pháp 1: Sử dụng API Facebook Downloader
-async function downloadWithFBDown(url, outputPath) {
-  try {
-    console.log("Đang tải video với FB Downloader API");
-    
-    // Gọi API lấy link tải
-    const response = await axios.get(`https://facebook-video-downloader-download-facebook-videos.p.rapidapi.com/app/main.php?url=${encodeURIComponent(url)}`, {
-      headers: {
-        'X-RapidAPI-Key': '2a54a31822msh37f2b82797f1c6dp1c1960jsn54bb50dd41e4',
-        'X-RapidAPI-Host': 'facebook-video-downloader-download-facebook-videos.p.rapidapi.com'
-      }
-    });
-    
-    if (!response.data || !response.data.links || response.data.links.length === 0) {
-      throw new Error("Không tìm thấy link tải từ API");
+// Hàm tải video trực tiếp từ Facebook sử dụng phương pháp scraping
+async function downloadFacebookVideoWithScraping(url, outputPath) {
+  return new Promise((resolve, reject) => {
+    try {
+      console.log("Đang tải video bằng phương pháp scraping");
+      
+      // Tạo một cookie ngẫu nhiên để tránh bị phát hiện là bot
+      const randomCookie = `sb=${crypto.randomBytes(12).toString('hex')}; datr=${crypto.randomBytes(12).toString('hex')}; locale=en_US`;
+      
+      // Tạo request đến URL của video Facebook
+      request({
+        url: url,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Connection': 'keep-alive',
+          'Upgrade-Insecure-Requests': '1',
+          'Cookie': randomCookie
+        }
+      }, (error, response, body) => {
+        if (error) {
+          return reject(new Error(`Lỗi khi tải trang Facebook: ${error.message}`));
+        }
+        
+        if (response.statusCode !== 200) {
+          return reject(new Error(`Lỗi khi tải trang Facebook: ${response.statusCode}`));
+        }
+        
+        try {
+          // Tìm link video HD trong mã nguồn trang
+          const $ = cheerio.load(body);
+          let videoTitle = $('meta[property="og:title"]').attr('content') || "Video Facebook";
+          
+          // Tìm URL của video trong JSON data
+          let videoURL = null;
+          const scriptTags = $('script').map((i, el) => $(el).html()).get();
+          
+          for (const script of scriptTags) {
+            // Tìm đoạn script chứa thông tin về video
+            if (script.includes('"playable_url"') || script.includes('"playable_url_quality_hd"')) {
+              const jsonStart = script.indexOf('{');
+              const jsonEnd = script.lastIndexOf('}') + 1;
+              
+              if (jsonStart >= 0 && jsonEnd > jsonStart) {
+                try {
+                  const jsonStr = script.substring(jsonStart, jsonEnd);
+                  const parsed = JSON.parse(jsonStr);
+                  
+                  // Tìm URL video trong các cấu trúc dữ liệu khác nhau
+                  if (parsed.playable_url_quality_hd) {
+                    videoURL = parsed.playable_url_quality_hd;
+                  } else if (parsed.playable_url) {
+                    videoURL = parsed.playable_url;
+                  } else if (parsed.data && parsed.data.video) {
+                    const videoData = parsed.data.video;
+                    if (videoData.playable_url_quality_hd) {
+                      videoURL = videoData.playable_url_quality_hd;
+                    } else if (videoData.playable_url) {
+                      videoURL = videoData.playable_url;
+                    }
+                  }
+                  
+                  if (videoURL) break;
+                } catch (e) {
+                  // Bỏ qua lỗi phân tích JSON
+                  console.log("Lỗi phân tích JSON:", e.message);
+                }
+              }
+            }
+          }
+          
+          // Phương pháp dự phòng: Tìm URL video từ thẻ meta
+          if (!videoURL) {
+            videoURL = $('meta[property="og:video:url"]').attr('content') || 
+                      $('meta[property="og:video"]').attr('content') || 
+                      $('meta[property="og:video:secure_url"]').attr('content');
+          }
+          
+          // Tải video
+          if (videoURL) {
+            console.log(`Đã tìm thấy URL video: ${videoURL}`);
+            
+            request({
+              url: videoURL,
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                'Referer': url
+              }
+            })
+            .on('error', function(err) {
+              reject(new Error(`Lỗi khi tải video: ${err.message}`));
+            })
+            .pipe(fs.createWriteStream(outputPath))
+            .on('close', function() {
+              console.log("Tải video hoàn tất bằng phương pháp scraping");
+              resolve({
+                success: true,
+                title: videoTitle
+              });
+            });
+          } else {
+            reject(new Error("Không tìm thấy URL video trong mã nguồn trang"));
+          }
+        } catch (err) {
+          reject(new Error(`Lỗi khi phân tích mã nguồn: ${err.message}`));
+        }
+      });
+    } catch (error) {
+      reject(new Error(`Lỗi scraping: ${error.message}`));
     }
-    
-    // Lấy link tải chất lượng cao nhất
-    const downloadLink = response.data.links[0].url;
-    
-    // Tải video từ link
-    const videoResponse = await axios({
-      method: 'get',
-      url: downloadLink,
-      responseType: 'arraybuffer',
-      timeout: 60000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
-      }
-    });
-    
-    fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
-    console.log("Tải video hoàn tất qua FB Downloader API");
-    
-    return {
-      success: true,
-      title: response.data.title || "Video Facebook"
-    };
-  } catch (error) {
-    console.error("Lỗi FB Downloader API:", error.message);
-    throw error;
-  }
+  });
 }
 
-// Phương pháp 2: Sử dụng API thay thế
-async function downloadWithAlternativeAPI(url, outputPath) {
+// Phương pháp 1: Sử dụng SSSGrab API
+async function downloadWithSSSGrab(url, outputPath) {
   try {
-    console.log("Đang tải video với API thay thế");
+    console.log("Đang tải video với SSSGrab API");
     
     // Gọi API lấy link tải
-    const response = await axios.get(`https://facebook-reel-and-video-downloader.p.rapidapi.com/app/main.php?url=${encodeURIComponent(url)}`, {
-      headers: {
-        'X-RapidAPI-Key': '2a54a31822msh37f2b82797f1c6dp1c1960jsn54bb50dd41e4',
-        'X-RapidAPI-Host': 'facebook-reel-and-video-downloader.p.rapidapi.com'
-      }
-    });
-    
-    if (!response.data || !response.data.links || response.data.links.length === 0) {
-      throw new Error("Không tìm thấy link tải từ API thay thế");
-    }
-    
-    // Lấy link tải chất lượng cao nhất
-    const downloadLink = response.data.links[0].url;
-    
-    // Tải video từ link
-    const videoResponse = await axios({
-      method: 'get',
-      url: downloadLink,
-      responseType: 'arraybuffer',
-      timeout: 60000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
-      }
-    });
-    
-    fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
-    console.log("Tải video hoàn tất qua API thay thế");
-    
-    return {
-      success: true,
-      title: response.data.title || "Video Facebook"
-    };
-  } catch (error) {
-    console.error("Lỗi API thay thế:", error.message);
-    throw error;
-  }
-}
-
-// Phương pháp 3: Sử dụng API FDOWN
-async function downloadWithFDOWN(url, outputPath) {
-  try {
-    console.log("Đang tải video với FDOWN API");
-    
-    // Gọi API lấy link tải
-    const response = await axios.get(`https://fdown.net/download.php?url=${encodeURIComponent(url)}`, {
+    const response = await axios.get(`https://api.sssgrab.com/media?url=${encodeURIComponent(url)}`, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Referer': 'https://fdown.net/'
-      }
-    });
-    
-    // Tìm link tải từ phản hồi HTML
-    const htmlContent = response.data;
-    const downloadLinkMatch = htmlContent.match(/href="(https:\/\/[^"]+\/download\/[^"]+)"/);
-    
-    if (!downloadLinkMatch || !downloadLinkMatch[1]) {
-      throw new Error("Không tìm thấy link tải từ FDOWN");
-    }
-    
-    const downloadLink = downloadLinkMatch[1];
-    
-    // Tải video từ link
-    const videoResponse = await axios({
-      method: 'get',
-      url: downloadLink,
-      responseType: 'arraybuffer',
-      timeout: 60000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Referer': 'https://fdown.net/'
-      }
-    });
-    
-    fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
-    console.log("Tải video hoàn tất qua FDOWN API");
-    
-    return {
-      success: true,
-      title: "Video Facebook"
-    };
-  } catch (error) {
-    console.error("Lỗi FDOWN API:", error.message);
-    throw error;
-  }
-}
-
-// Phương pháp 4: Sử dụng API SaveFrom
-async function downloadWithSaveFrom(url, outputPath) {
-  try {
-    console.log("Đang tải video với SaveFrom API");
-    
-    // API mới từ SaveFrom
-    const apiUrl = `https://worker-syntax-dawn-95c9.lulardev.workers.dev/sf?url=${encodeURIComponent(url)}`;
-    
-    const response = await axios.get(apiUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+        'Accept': 'application/json',
+        'Referer': 'https://sssgrab.com/'
       },
       timeout: 30000
     });
     
     if (!response.data || !response.data.url) {
-      throw new Error("SaveFrom API không trả về link tải");
+      throw new Error("SSSGrab API không trả về link tải");
     }
     
     const downloadLink = response.data.url;
@@ -194,42 +174,38 @@ async function downloadWithSaveFrom(url, outputPath) {
     });
     
     fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
-    console.log("Tải video hoàn tất qua SaveFrom API");
+    console.log("Tải video hoàn tất qua SSSGrab API");
     
     return {
       success: true,
-      title: response.data.meta && response.data.meta.title ? response.data.meta.title : "Video Facebook"
+      title: response.data.title || "Video Facebook"
     };
   } catch (error) {
-    console.error("Lỗi SaveFrom API:", error.message);
+    console.error("Lỗi SSSGrab API:", error.message);
     throw error;
   }
 }
 
-// Phương pháp 5: Sử dụng API DownTik
-async function downloadWithDownTik(url, outputPath) {
+// Phương pháp 2: Sử dụng SaveAs API
+async function downloadWithSaveAs(url, outputPath) {
   try {
-    console.log("Đang tải video với DownTik API");
+    console.log("Đang tải video với SaveAs API");
     
-    // Chuẩn bị request đến API DownTik
-    const response = await axios.post('https://downtik.net/API/reels', 
-      `URL=${encodeURIComponent(url)}`,
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-          'Origin': 'https://downtik.net',
-          'Referer': 'https://downtik.net/'
-        }
-      }
-    );
+    // Gọi API để lấy link tải
+    const response = await axios.get(`https://api.saveas.co/get_url?url=${encodeURIComponent(url)}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Referer': 'https://saveas.co/'
+      },
+      timeout: 30000
+    });
     
-    if (!response.data || !response.data.videoLinks || response.data.videoLinks.length === 0) {
-      throw new Error("DownTik API không trả về link tải");
+    if (!response.data || !response.data.url) {
+      throw new Error("SaveAs API không trả về link tải");
     }
     
-    // Chọn link tải chất lượng cao nhất
-    const downloadLink = response.data.videoLinks[0].url;
+    const downloadLink = response.data.url;
     
     // Tải video từ link
     const videoResponse = await axios({
@@ -243,14 +219,103 @@ async function downloadWithDownTik(url, outputPath) {
     });
     
     fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
-    console.log("Tải video hoàn tất qua DownTik API");
+    console.log("Tải video hoàn tất qua SaveAs API");
     
     return {
       success: true,
       title: response.data.title || "Video Facebook"
     };
   } catch (error) {
-    console.error("Lỗi DownTik API:", error.message);
+    console.error("Lỗi SaveAs API:", error.message);
+    throw error;
+  }
+}
+
+// Phương pháp 3: Sử dụng Y2Mate API
+async function downloadWithY2Mate(url, outputPath) {
+  try {
+    console.log("Đang tải video với Y2Mate API");
+    
+    // Bước 1: Lấy thông tin video
+    const analyzeResponse = await axios.post('https://www.y2mate.com/mates/analyzeV2/ajax', 
+      new URLSearchParams({
+        'k_query': url,
+        'k_page': 'facebook',
+        'hl': 'en',
+        'q_auto': 0
+      }), {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'X-Requested-With': 'XMLHttpRequest',
+          'Origin': 'https://www.y2mate.com',
+          'Referer': 'https://www.y2mate.com/facebook-downloader'
+        }
+      });
+    
+    if (!analyzeResponse.data || !analyzeResponse.data.links || Object.keys(analyzeResponse.data.links).length === 0) {
+      throw new Error("Y2Mate không tìm thấy link tải");
+    }
+    
+    // Chọn link chất lượng tốt nhất
+    const availableLinks = analyzeResponse.data.links;
+    let selectedFormat = null;
+    
+    // Lấy danh sách kích thước để sắp xếp theo chất lượng
+    const formatSizes = Object.keys(availableLinks).filter(size => size.includes('mp4'));
+    
+    if (formatSizes.length > 0) {
+      // Tìm định dạng mp4 đầu tiên
+      selectedFormat = formatSizes[0];
+    } else {
+      throw new Error("Không tìm thấy định dạng MP4");
+    }
+    
+    const videoInfo = availableLinks[selectedFormat];
+    const videoId = analyzeResponse.data.vid;
+    
+    // Bước 2: Gửi yêu cầu tải
+    const convertResponse = await axios.post('https://www.y2mate.com/mates/convertV2/index', 
+      new URLSearchParams({
+        'vid': videoId,
+        'k': videoInfo.k
+      }), {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'X-Requested-With': 'XMLHttpRequest',
+          'Origin': 'https://www.y2mate.com',
+          'Referer': 'https://www.y2mate.com/facebook-downloader'
+        }
+      });
+    
+    if (!convertResponse.data || !convertResponse.data.dlink) {
+      throw new Error("Y2Mate không trả về link tải");
+    }
+    
+    const downloadLink = convertResponse.data.dlink;
+    
+    // Tải video từ link
+    const videoResponse = await axios({
+      method: 'get',
+      url: downloadLink,
+      responseType: 'arraybuffer',
+      timeout: 60000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Referer': 'https://www.y2mate.com/'
+      }
+    });
+    
+    fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
+    console.log("Tải video hoàn tất qua Y2Mate API");
+    
+    return {
+      success: true,
+      title: analyzeResponse.data.title || "Video Facebook"
+    };
+  } catch (error) {
+    console.error("Lỗi Y2Mate API:", error.message);
     throw error;
   }
 }
@@ -259,49 +324,40 @@ async function downloadWithDownTik(url, outputPath) {
 async function downloadFacebookVideo(videoUrl, outputPath) {
   let errors = [];
   
-  // Phương pháp 1: Sử dụng SaveFrom (phương pháp mới, không yêu cầu API key)
+  // Phương pháp 1: Trực tiếp scraping từ Facebook
   try {
-    console.log("Phương pháp 1: SaveFrom API");
-    return await downloadWithSaveFrom(videoUrl, outputPath);
+    console.log("Phương pháp 1: Trực tiếp từ Facebook");
+    return await downloadFacebookVideoWithScraping(videoUrl, outputPath);
   } catch (error) {
     console.log("Phương pháp 1 thất bại:", error.message);
-    errors.push(`SaveFrom: ${error.message}`);
+    errors.push(`Scraping: ${error.message}`);
   }
   
-  // Phương pháp 2: Sử dụng FDOWN
+  // Phương pháp 2: SSSGrab API
   try {
-    console.log("Phương pháp 2: FDOWN API");
-    return await downloadWithFDOWN(videoUrl, outputPath);
+    console.log("Phương pháp 2: SSSGrab API");
+    return await downloadWithSSSGrab(videoUrl, outputPath);
   } catch (error) {
     console.log("Phương pháp 2 thất bại:", error.message);
-    errors.push(`FDOWN: ${error.message}`);
+    errors.push(`SSSGrab: ${error.message}`);
   }
   
-  // Phương pháp 3: Sử dụng DownTik
+  // Phương pháp 3: SaveAs API
   try {
-    console.log("Phương pháp 3: DownTik API");
-    return await downloadWithDownTik(videoUrl, outputPath);
+    console.log("Phương pháp 3: SaveAs API");
+    return await downloadWithSaveAs(videoUrl, outputPath);
   } catch (error) {
     console.log("Phương pháp 3 thất bại:", error.message);
-    errors.push(`DownTik: ${error.message}`);
+    errors.push(`SaveAs: ${error.message}`);
   }
   
-  // Phương pháp 4: Sử dụng FB Downloader API (RapidAPI)
+  // Phương pháp 4: Y2Mate API
   try {
-    console.log("Phương pháp 4: FB Downloader API");
-    return await downloadWithFBDown(videoUrl, outputPath);
+    console.log("Phương pháp 4: Y2Mate API");
+    return await downloadWithY2Mate(videoUrl, outputPath);
   } catch (error) {
     console.log("Phương pháp 4 thất bại:", error.message);
-    errors.push(`FB Downloader: ${error.message}`);
-  }
-  
-  // Phương pháp 5: Sử dụng API thay thế (RapidAPI)
-  try {
-    console.log("Phương pháp 5: API thay thế");
-    return await downloadWithAlternativeAPI(videoUrl, outputPath);
-  } catch (error) {
-    console.log("Phương pháp 5 thất bại:", error.message);
-    errors.push(`API thay thế: ${error.message}`);
+    errors.push(`Y2Mate: ${error.message}`);
   }
   
   // Nếu tất cả các phương pháp đều thất bại, ném lỗi tổng hợp
