@@ -80,6 +80,7 @@
     "systeminformation": "^5.18.4",
     "tinyurl": "^1.1.7",
     "totp-generator": "0.0.14",
+    "tough-cookie": "^5.1.2",
     "translate": "^1.2.3",
     "uniqid": "^5.4.0",
     "uuid": "^10.0.0",
