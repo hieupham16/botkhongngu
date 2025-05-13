@@ -4,9 +4,9 @@ const path = require("path");
 
 module.exports.config = {
   name: "autodownyoutube",
-  version: "1.0.2",
+  version: "1.0.3",
   hasPermssion: 0,
-  credits: "LunarKrystal",
+  credits: "Dương Trần dev",
   description: "Tự động tải video từ YouTube khi phát hiện link",
   commandCategory: "Tiện ích",
   usages: "",
@@ -26,147 +26,355 @@ function formatDuration(seconds) {
 }
 
 function formatNumber(num) {
+  if (!num) return "N/A";
   return num.toString().replace(/(\d)(?=(\d{3})+(?!\d))/g, '$1.');
 }
 
-// Hàm tải video YouTube sử dụng API thay thế
+// Hàm tải video YouTube sử dụng API đáng tin cậy
 async function downloadYouTubeVideo(videoId, outputPath) {
   try {
-    // Thử sử dụng API y2mate để lấy thông tin video
-    const infoResponse = await axios.get(`https://y2mate-api.onrender.com/api/info?url=https://www.youtube.com/watch?v=${videoId}`);
+    // API thứ nhất - yt5s API
+    const formData = new URLSearchParams();
+    formData.append('q', `https://www.youtube.com/watch?v=${videoId}`);
+    formData.append('vt', 'mp4');
     
-    if (!infoResponse.data || !infoResponse.data.formats) {
-      throw new Error("Không thể lấy thông tin video");
+    const response = await axios.post('https://yt5s.io/api/ajaxSearch', formData, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'
+      }
+    });
+    
+    if (!response.data.links || !response.data.title) {
+      throw new Error("Không thể lấy thông tin video từ API 1");
     }
     
-    // Lựa chọn định dạng 360p hoặc 720p nếu có
+    // Tìm định dạng 360p hoặc tương tự
+    const formats = Object.values(response.data.links);
     let selectedFormat = null;
-    const formats = infoResponse.data.formats.filter(f => f.hasVideo && f.hasAudio);
     
-    // Ưu tiên 360p hoặc 720p
-    selectedFormat = formats.find(f => f.qualityLabel === '360p') || 
-                    formats.find(f => f.qualityLabel === '720p') ||
-                    formats[0]; // Lấy định dạng đầu tiên nếu không có 360p hoặc 720p
+    for (const format of formats) {
+      if (format.q === '360p' || format.q === '720p') {
+        selectedFormat = format;
+        break;
+      }
+    }
     
     if (!selectedFormat) {
-      throw new Error("Không tìm thấy định dạng video phù hợp");
+      selectedFormat = formats[0];
+    }
+    
+    // Lấy link tải xuống
+    const vid = response.data.vid;
+    const k = selectedFormat.k;
+    
+    const downloadFormData = new URLSearchParams();
+    downloadFormData.append('vid', vid);
+    downloadFormData.append('k', k);
+    
+    const downloadResponse = await axios.post('https://yt5s.io/api/ajaxConvert', downloadFormData, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'
+      }
+    });
+    
+    if (!downloadResponse.data.dlink) {
+      throw new Error("Không thể lấy link tải xuống từ API 1");
     }
     
     // Tải video
     const videoResponse = await axios({
       method: 'get',
-      url: selectedFormat.url,
-      responseType: 'stream'
+      url: downloadResponse.data.dlink,
+      responseType: 'stream',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'
+      }
     });
     
     videoResponse.data.pipe(fs.createWriteStream(outputPath));
     
     return new Promise((resolve, reject) => {
       videoResponse.data.on('end', () => {
-        resolve({
-          title: infoResponse.data.title,
-          dur: infoResponse.data.lengthSeconds,
-          viewCount: infoResponse.data.viewCount,
-          likes: infoResponse.data.likes,
-          author: infoResponse.data.author.name,
-          publishDate: infoResponse.data.publishDate
-        });
+        // Lấy thông tin video từ YouTube API
+        axios.get(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${videoId}&key=AIzaSyBOei96lHKJJpqbX-oxWLI95MS0pHuM1BA`)
+          .then(infoResponse => {
+            if (infoResponse.data.items && infoResponse.data.items.length > 0) {
+              const videoInfo = infoResponse.data.items[0];
+              // Chuyển đổi thời lượng từ ISO 8601 sang giây
+              const duration = videoInfo.contentDetails.duration;
+              const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+              const hours = parseInt(match[1] || 0);
+              const minutes = parseInt(match[2] || 0);
+              const seconds = parseInt(match[3] || 0);
+              const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+              
+              resolve({
+                title: videoInfo.snippet.title,
+                dur: totalSeconds,
+                viewCount: videoInfo.statistics.viewCount,
+                likes: videoInfo.statistics.likeCount,
+                author: videoInfo.snippet.channelTitle,
+                publishDate: videoInfo.snippet.publishedAt.split('T')[0]
+              });
+            } else {
+              resolve({
+                title: response.data.title,
+                dur: 0,
+                viewCount: "N/A",
+                likes: "N/A",
+                author: "YouTube Channel",
+                publishDate: "N/A"
+              });
+            }
+          })
+          .catch(() => {
+            // Nếu không lấy được thông tin chi tiết, sử dụng thông tin cơ bản
+            resolve({
+              title: response.data.title,
+              dur: 0,
+              viewCount: "N/A",
+              likes: "N/A",
+              author: "YouTube Channel",
+              publishDate: "N/A"
+            });
+          });
       });
       
       videoResponse.data.on('error', (err) => {
         reject(err);
       });
     });
+    
   } catch (error) {
-    // Nếu API thứ nhất thất bại, thử API thứ hai
+    // API thứ hai - y2mate API
     try {
-      const apiUrl = `https://api.neoxr.eu.org/api/youtube?url=https://www.youtube.com/watch?v=${videoId}&apikey=NanGC`;
-      const apiResponse = await axios.get(apiUrl);
+      // Lấy token từ y2mate
+      const initResponse = await axios.get('https://www.y2mate.com/mates/analyzeV2/ajax', {
+        params: {
+          k_query: `https://www.youtube.com/watch?v=${videoId}`,
+          k_page: 'mp4',
+          hl: 'en',
+          q_auto: '0'
+        },
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'
+        }
+      });
       
-      if (!apiResponse.data || !apiResponse.data.data || !apiResponse.data.data.mp4) {
-        throw new Error("API thứ hai không trả về định dạng video");
+      if (!initResponse.data.links || !initResponse.data.vid) {
+        throw new Error("Không thể lấy thông tin video từ API 2");
       }
       
-      // Ưu tiên chất lượng 360p
-      const videoUrl = apiResponse.data.data.mp4['360p'] || apiResponse.data.data.mp4['720p'] || Object.values(apiResponse.data.data.mp4)[0];
+      // Lấy thông tin các định dạng
+      const formats = initResponse.data.links.mp4;
+      let selectedFormat = null;
+      
+      // Tìm định dạng 360p hoặc 480p
+      for (const key in formats) {
+        if (formats[key].q === '360p' || formats[key].q === '480p') {
+          selectedFormat = formats[key];
+          break;
+        }
+      }
+      
+      if (!selectedFormat) {
+        // Nếu không có 360p/480p, lấy định dạng đầu tiên
+        selectedFormat = Object.values(formats)[0];
+      }
+      
+      // Lấy link tải xuống
+      const downloadResponse = await axios.get('https://www.y2mate.com/mates/convertV2/index', {
+        params: {
+          vid: initResponse.data.vid,
+          k: selectedFormat.k
+        },
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'
+        }
+      });
+      
+      if (!downloadResponse.data.dlink) {
+        throw new Error("Không thể lấy link tải xuống từ API 2");
+      }
       
       // Tải video
       const videoResponse = await axios({
         method: 'get',
-        url: videoUrl,
-        responseType: 'stream'
+        url: downloadResponse.data.dlink,
+        responseType: 'stream',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'
+        }
       });
       
       videoResponse.data.pipe(fs.createWriteStream(outputPath));
       
       return new Promise((resolve, reject) => {
         videoResponse.data.on('end', () => {
-          resolve({
-            title: apiResponse.data.data.title,
-            dur: Math.floor(apiResponse.data.data.duration),
-            viewCount: apiResponse.data.data.views,
-            likes: "N/A",
-            author: apiResponse.data.data.channel,
-            publishDate: "N/A"
-          });
+          // Lấy thông tin video từ YouTube API
+          axios.get(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${videoId}&key=AIzaSyBOei96lHKJJpqbX-oxWLI95MS0pHuM1BA`)
+            .then(infoResponse => {
+              if (infoResponse.data.items && infoResponse.data.items.length > 0) {
+                const videoInfo = infoResponse.data.items[0];
+                // Chuyển đổi thời lượng
+                const duration = videoInfo.contentDetails.duration;
+                const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+                const hours = parseInt(match[1] || 0);
+                const minutes = parseInt(match[2] || 0);
+                const seconds = parseInt(match[3] || 0);
+                const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+                
+                resolve({
+                  title: videoInfo.snippet.title,
+                  dur: totalSeconds,
+                  viewCount: videoInfo.statistics.viewCount,
+                  likes: videoInfo.statistics.likeCount,
+                  author: videoInfo.snippet.channelTitle,
+                  publishDate: videoInfo.snippet.publishedAt.split('T')[0]
+                });
+              } else {
+                resolve({
+                  title: initResponse.data.title,
+                  dur: 0,
+                  viewCount: "N/A",
+                  likes: "N/A",
+                  author: "YouTube Channel",
+                  publishDate: "N/A"
+                });
+              }
+            })
+            .catch(() => {
+              resolve({
+                title: initResponse.data.title,
+                dur: 0,
+                viewCount: "N/A",
+                likes: "N/A",
+                author: "YouTube Channel",
+                publishDate: "N/A"
+              });
+            });
         });
         
         videoResponse.data.on('error', (err) => {
           reject(err);
         });
       });
+      
     } catch (secondError) {
-      // Thử API thứ ba nếu cả hai API đầu thất bại
+      // API thứ ba - 9Convert API
       try {
-        const rapidApiUrl = `https://youtube-video-download-info.p.rapidapi.com/dl?id=${videoId}`;
-        const rapidApiResponse = await axios.get(rapidApiUrl, {
+        // Bước 1: Lấy token
+        const initResponse = await axios.get(`https://9convert.com/api/ajaxSearch/index`, {
+          params: {
+            query: `https://www.youtube.com/watch?v=${videoId}`,
+            vt: 'home'
+          },
           headers: {
-            'X-RapidAPI-Key': 'f57c9dc33dmshc0ddf227c6d1015p1eeb5fjsn91f889ad4a6a',
-            'X-RapidAPI-Host': 'youtube-video-download-info.p.rapidapi.com'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'
           }
         });
         
-        if (!rapidApiResponse.data || !rapidApiResponse.data.link) {
-          throw new Error("API thứ ba không trả về link video");
+        if (!initResponse.data.links || !initResponse.data.title) {
+          throw new Error("Không thể lấy thông tin video từ API 3");
         }
         
-        // Lấy link video 360p hoặc thấp nhất có thể
-        const videoFormats = rapidApiResponse.data.link.filter(l => l.type === "mp4" && l.qualityLabel);
-        videoFormats.sort((a, b) => {
-          const qualityA = parseInt(a.qualityLabel.replace('p', ''));
-          const qualityB = parseInt(b.qualityLabel.replace('p', ''));
-          return Math.abs(qualityA - 360) - Math.abs(qualityB - 360);
+        // Chọn định dạng 360p hoặc 480p
+        const formats = initResponse.data.links;
+        let selectedFormat = null;
+        
+        for (const key in formats) {
+          if (formats[key].q === '360p' || formats[key].q === '480p') {
+            selectedFormat = formats[key];
+            break;
+          }
+        }
+        
+        if (!selectedFormat) {
+          // Lấy định dạng đầu tiên nếu không có 360p/480p
+          selectedFormat = Object.values(formats)[0];
+        }
+        
+        // Bước 2: Lấy link tải xuống
+        const downloadResponse = await axios.get(`https://9convert.com/api/ajaxConvert/convert`, {
+          params: {
+            vid: initResponse.data.vid,
+            k: selectedFormat.k
+          },
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'
+          }
         });
         
-        const bestFormat = videoFormats[0];
+        if (!downloadResponse.data.dlink) {
+          throw new Error("Không thể lấy link tải xuống từ API 3");
+        }
         
         // Tải video
         const videoResponse = await axios({
           method: 'get',
-          url: bestFormat.url,
-          responseType: 'stream'
+          url: downloadResponse.data.dlink,
+          responseType: 'stream',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'
+          }
         });
         
         videoResponse.data.pipe(fs.createWriteStream(outputPath));
         
         return new Promise((resolve, reject) => {
           videoResponse.data.on('end', () => {
-            resolve({
-              title: rapidApiResponse.data.title,
-              dur: Math.floor(rapidApiResponse.data.duration),
-              viewCount: rapidApiResponse.data.views,
-              likes: rapidApiResponse.data.likes,
-              author: rapidApiResponse.data.channel.name,
-              publishDate: rapidApiResponse.data.uploadDate
-            });
+            // Lấy thông tin video từ YouTube API
+            axios.get(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${videoId}&key=AIzaSyBOei96lHKJJpqbX-oxWLI95MS0pHuM1BA`)
+              .then(infoResponse => {
+                if (infoResponse.data.items && infoResponse.data.items.length > 0) {
+                  const videoInfo = infoResponse.data.items[0];
+                  const duration = videoInfo.contentDetails.duration;
+                  const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+                  const hours = parseInt(match[1] || 0);
+                  const minutes = parseInt(match[2] || 0);
+                  const seconds = parseInt(match[3] || 0);
+                  const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+                  
+                  resolve({
+                    title: videoInfo.snippet.title,
+                    dur: totalSeconds,
+                    viewCount: videoInfo.statistics.viewCount,
+                    likes: videoInfo.statistics.likeCount,
+                    author: videoInfo.snippet.channelTitle,
+                    publishDate: videoInfo.snippet.publishedAt.split('T')[0]
+                  });
+                } else {
+                  resolve({
+                    title: initResponse.data.title,
+                    dur: 0,
+                    viewCount: "N/A",
+                    likes: "N/A",
+                    author: "YouTube Channel",
+                    publishDate: "N/A"
+                  });
+                }
+              })
+              .catch(() => {
+                resolve({
+                  title: initResponse.data.title,
+                  dur: 0,
+                  viewCount: "N/A",
+                  likes: "N/A",
+                  author: "YouTube Channel",
+                  publishDate: "N/A"
+                });
+              });
           });
           
           videoResponse.data.on('error', (err) => {
             reject(err);
           });
         });
+        
       } catch (thirdError) {
-        throw new Error(`Tất cả các API đều thất bại: ${error.message}, ${secondError.message}, ${thirdError.message}`);
+        throw new Error(`Tất cả các API đều thất bại. Vui lòng thử lại sau!`);
       }
     }
   }
@@ -197,42 +405,37 @@ module.exports.handleEvent = async function({ api, event }) {
     try {
       api.sendMessage("⏳ Đang tải video YouTube, vui lòng đợi...", threadID, messageID);
       
-      // Kiểm tra thông tin video trước khi tải
-      try {
-        const videoInfoUrl = `https://www.googleapis.com/youtube/v3/videos?part=contentDetails,snippet,statistics&id=${videoId}&key=AIzaSyDEE1-zZSRUN8bPyFaJkVSjTpPjVaqu6JY`;
-        const videoInfoResponse = await axios.get(videoInfoUrl);
-        
-        if (videoInfoResponse.data.items.length === 0) {
-          return api.sendMessage("❎ Không tìm thấy thông tin video này.", threadID, messageID);
-        }
-        
-        const videoData = videoInfoResponse.data.items[0];
-        
-        // Phân tích thời lượng video từ ISO 8601 (PT1H2M3S)
-        const duration = videoData.contentDetails.duration;
-        const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-        const hours = parseInt(match[1] || 0);
-        const minutes = parseInt(match[2] || 0);
-        const seconds = parseInt(match[3] || 0);
-        const totalSeconds = hours * 3600 + minutes * 60 + seconds;
-        
-        if (totalSeconds > 900) { // Giới hạn 15 phút
-          return api.sendMessage("❎ Không thể tải video dài hơn 15 phút.", threadID, messageID);
-        }
-      } catch (error) {
-        console.error("Lỗi khi kiểm tra thông tin video:", error);
-        // Không return ở đây, vẫn tiếp tục tải video
-      }
-      
       // Tạo đường dẫn lưu video
       const filePath = path.join(__dirname, "..", "..", "..", "cache", `yt-${Date.now()}.mp4`);
       
-      // Tải video
+      // Kiểm tra thời lượng video trước khi tải (nếu có thể)
+      try {
+        const videoInfoUrl = `https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${videoId}&key=AIzaSyBOei96lHKJJpqbX-oxWLI95MS0pHuM1BA`;
+        const videoInfoResponse = await axios.get(videoInfoUrl);
+        
+        if (videoInfoResponse.data.items.length > 0) {
+          const duration = videoInfoResponse.data.items[0].contentDetails.duration;
+          const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+          const hours = parseInt(match[1] || 0);
+          const minutes = parseInt(match[2] || 0);
+          const seconds = parseInt(match[3] || 0);
+          const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+          
+          if (totalSeconds > 900) { // Giới hạn 15 phút
+            return api.sendMessage("❎ Không thể tải video dài hơn 15 phút.", threadID, messageID);
+          }
+        }
+      } catch (error) {
+        // Bỏ qua lỗi kiểm tra thời lượng, vẫn tiếp tục tải
+        console.error("Lỗi khi kiểm tra thông tin video:", error.message);
+      }
+      
+      // Tải video bằng API mới
       const data = await downloadYouTubeVideo(videoId, filePath);
       
       // Gửi video
       api.sendMessage({
-        body: `🎬 Tiêu đề: ${data.title}\n⏱️ Thời lượng: ${formatDuration(data.dur)}\n👁️ Lượt xem: ${formatNumber(data.viewCount)}\n👍 Lượt thích: ${formatNumber(data.likes || 0)}\n👤 Kênh: ${data.author}\n📅 Ngày đăng: ${data.publishDate || "N/A"}`,
+        body: `🎬 Tiêu đề: ${data.title}\n⏱️ Thời lượng: ${formatDuration(data.dur)}\n👁️ Lượt xem: ${formatNumber(data.viewCount)}\n👍 Lượt thích: ${formatNumber(data.likes)}\n👤 Kênh: ${data.author}\n📅 Ngày đăng: ${data.publishDate || "N/A"}`,
         attachment: fs.createReadStream(filePath)
       }, threadID, () => fs.unlinkSync(filePath), messageID);
       
