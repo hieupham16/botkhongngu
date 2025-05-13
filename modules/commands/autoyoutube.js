@@ -1,7 +1,8 @@
 const axios = require("axios");
 const fs = require("fs-extra");
 const path = require("path");
-const ytdl = require("ytdl-core");
+// Không sử dụng ytdl-core để tương thích tốt hơn với Render
+// const ytdl = require("ytdl-core");
 const stream = require("stream");
 const { promisify } = require("util");
 const pipeline = promisify(stream.pipeline);
@@ -17,8 +18,8 @@ module.exports.config = {
   cooldowns: 5,
   dependencies: {
     "axios": "",
-    "fs-extra": "",
-    "ytdl-core": ""
+    "fs-extra": ""
+    // Loại bỏ ytdl-core khỏi dependencies
   }
 };
 
@@ -74,6 +75,112 @@ async function getVideoInfo(videoId) {
       console.error("Lỗi API dự phòng:", backupError.message);
       throw error; // Ném lại lỗi ban đầu
     }
+  }
+}
+
+// Thêm API mới: Y2mate API
+async function downloadWithY2mate(videoId, outputPath) {
+  try {
+    console.log("Đang tải video với Y2mate API");
+    
+    // Bước 1: Lấy thông tin tải từ Y2mate
+    const firstResponse = await axios.post('https://www.y2mate.com/mates/analyze/ajax', 
+      new URLSearchParams({
+        'k_query': `https://www.youtube.com/watch?v=${videoId}`,
+        'k_page': 'home',
+        'hl': 'vi',
+        'q_auto': '0'
+      }).toString(),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+          'X-Requested-With': 'XMLHttpRequest'
+        }
+      }
+    );
+    
+    if (!firstResponse.data || !firstResponse.data.result) {
+      throw new Error("Y2mate không trả về kết quả phân tích");
+    }
+    
+    // Tìm định dạng mp4 360p
+    const htmlResult = firstResponse.data.result;
+    const videoTitle = firstResponse.data.title || "YouTube Video";
+    
+    // Trích xuất id của video trong hệ thống Y2mate
+    const videoIdMatch = htmlResult.match(/var k__id\s*=\s*["']([^"']+)["']/);
+    if (!videoIdMatch) {
+      throw new Error("Không tìm thấy ID video trong Y2mate");
+    }
+    const k__id = videoIdMatch[1];
+    
+    // Bước 2: Tìm link mp4 chất lượng 360p
+    const formatId = htmlResult.includes('mp4a') ? 'mp4a' : 'mp4';
+    const qualityId = '18'; // Mã cho 360p
+    
+    // Yêu cầu link tải
+    const secondResponse = await axios.post('https://www.y2mate.com/mates/convert', 
+      new URLSearchParams({
+        'type': 'youtube',
+        '_id': k__id,
+        'v_id': videoId,
+        'ajax': '1',
+        'token': '',
+        'ftype': formatId,
+        'fquality': qualityId
+      }).toString(),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+          'X-Requested-With': 'XMLHttpRequest'
+        }
+      }
+    );
+    
+    if (!secondResponse.data || !secondResponse.data.result) {
+      throw new Error("Y2mate không trả về link tải");
+    }
+    
+    // Trích xuất link tải từ HTML
+    const downloadLinkMatch = secondResponse.data.result.match(/href="([^"]+)"/);
+    if (!downloadLinkMatch) {
+      throw new Error("Không tìm thấy link tải trong kết quả Y2mate");
+    }
+    
+    const downloadLink = downloadLinkMatch[1];
+    
+    // Tải video
+    console.log(`Đang tải video từ: ${downloadLink}`);
+    const videoResponse = await axios({
+      method: 'get',
+      url: downloadLink,
+      responseType: 'arraybuffer',
+      timeout: 60000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+      }
+    });
+    
+    // Ghi file
+    fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
+    console.log("Tải video hoàn tất qua Y2mate");
+    
+    // Lấy thông tin video
+    const info = await getVideoInfo(videoId);
+    return {
+      title: info.title || videoTitle,
+      dur: info.lengthSeconds,
+      viewCount: info.viewCount,
+      likes: info.likeCount,
+      author: info.author,
+      publishDate: info.publishedAt,
+      quality: "360"
+    };
+  } catch (error) {
+    console.error("Lỗi Y2mate:", error.message);
+    throw error;
   }
 }
 
@@ -183,53 +290,84 @@ async function downloadWithInvidious(videoId, outputPath) {
   }
 }
 
-// Phương pháp 3: Sử dụng RapidAPI YouTube
-async function downloadWithRapidAPI(videoId, outputPath) {
+// Thêm API mới: SSYT API
+async function downloadWithSSYT(videoId, outputPath) {
   try {
-    console.log("Đang tải video với RapidAPI");
+    console.log("Đang tải video với SSYT API");
     
-    // Lấy thông tin video và link tải
-    const options = {
-      method: 'GET',
-      url: 'https://youtube-mp36.p.rapidapi.com/dl',
-      params: {id: videoId, format: 'mp4'},
+    // Sử dụng dịch vụ SSYouTube.com
+    const ssytUrl = `https://ssyoutube.com/api/convert`;
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    
+    const response = await axios.post(ssytUrl, {
+      url: videoUrl
+    }, {
       headers: {
-        'X-RapidAPI-Key': '2a54a31822msh37f2b82797f1c6dp1c1960jsn54bb50dd41e4', // Thay key của bạn vào đây
-        'X-RapidAPI-Host': 'youtube-mp36.p.rapidapi.com'
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Origin': 'https://ssyoutube.com',
+        'Referer': 'https://ssyoutube.com/'
       }
-    };
+    });
     
-    const response = await axios.request(options);
+    if (!response.data || !response.data.url) {
+      throw new Error("SSYT API không trả về link tải");
+    }
     
-    if (!response.data || !response.data.link) {
-      throw new Error("RapidAPI không trả về link tải");
+    // Tìm link mp4 chất lượng thích hợp
+    let downloadUrl = '';
+    const formats = response.data.url || [];
+    let mp4formats = formats.filter(format => format.ext === 'mp4' && format.audioAvailable);
+    
+    // Sắp xếp theo chất lượng, ưu tiên 360p
+    mp4formats.sort((a, b) => {
+      if (a.quality === '360p') return -1;
+      if (b.quality === '360p') return 1;
+      if (a.quality === '720p') return -1;
+      if (b.quality === '720p') return 1;
+      return parseInt(a.quality) - parseInt(b.quality);
+    });
+    
+    if (mp4formats.length > 0) {
+      downloadUrl = mp4formats[0].url;
+    } else if (formats.length > 0 && formats[0].url) {
+      downloadUrl = formats[0].url;
+    }
+    
+    if (!downloadUrl) {
+      throw new Error("Không tìm thấy link tải phù hợp từ SSYT");
     }
     
     // Tải video
     const videoResponse = await axios({
       method: 'get',
-      url: response.data.link,
+      url: downloadUrl,
       responseType: 'arraybuffer',
-      timeout: 60000
+      timeout: 60000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+      }
     });
     
     // Ghi file
     fs.writeFileSync(outputPath, Buffer.from(videoResponse.data));
-    console.log("Tải video hoàn tất qua RapidAPI");
+    console.log("Tải video hoàn tất qua SSYT API");
     
     // Lấy thông tin video
     const info = await getVideoInfo(videoId);
+    const quality = mp4formats.length > 0 ? mp4formats[0].quality.replace('p', '') : "360";
+    
     return {
-      title: info.title || response.data.title,
-      dur: info.lengthSeconds,
+      title: info.title || response.data.meta?.title || "YouTube Video",
+      dur: info.lengthSeconds || response.data.meta?.duration || 0,
       viewCount: info.viewCount,
       likes: info.likeCount,
-      author: info.author,
+      author: info.author || response.data.meta?.source || "YouTube",
       publishDate: info.publishedAt,
-      quality: "360"
+      quality: quality
     };
   } catch (error) {
-    console.error("Lỗi RapidAPI:", error.message);
+    console.error("Lỗi SSYT API:", error.message);
     throw error;
   }
 }
@@ -246,108 +384,28 @@ async function downloadYouTubeVideo(videoId, outputPath) {
     lastError = error;
   }
   
-  // Phương pháp 2: Sử dụng PytubeAPI
+  // Phương pháp 2: Sử dụng Y2mate API
   try {
-    return await downloadWithPytubeAPI(videoId, outputPath);
+    return await downloadWithY2mate(videoId, outputPath);
   } catch (error) {
     console.log("Phương pháp 2 thất bại, đang thử phương pháp 3...");
     lastError = error;
   }
   
-  // Phương pháp 3: Sử dụng RapidAPI
+  // Phương pháp 3: Sử dụng SSYT API
   try {
-    return await downloadWithRapidAPI(videoId, outputPath);
+    return await downloadWithSSYT(videoId, outputPath);
   } catch (error) {
-    console.log("Phương pháp 3 thất bại, đang thử cách cuối...");
+    console.log("Phương pháp 3 thất bại, đang thử phương pháp 4...");
     lastError = error;
   }
   
-  // Phương pháp 4: Sử dụng ytdl-core với cấu hình đặc biệt (giữ lại để tương thích)
+  // Phương pháp 4: Sử dụng PytubeAPI
   try {
-    console.log(`Đang tải video với ID: ${videoId} bằng ytdl-core`);
-    
-    // Thiết lập cookie và header đặc biệt để vượt qua giới hạn của YouTube
-    const options = {
-      quality: 'highest',
-      filter: format => format.container === 'mp4' && format.hasVideo && format.hasAudio,
-      requestOptions: {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Cookie': 'CONSENT=YES+; VISITOR_INFO1_LIVE=unique-id; GPS=1',
-          'Connection': 'keep-alive',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'none',
-          'Sec-Fetch-User': '?1',
-          'Upgrade-Insecure-Requests': '1'
-        }
-      }
-    };
-    
-    // Bắt thông tin video trước
-    const info = await ytdl.getInfo(videoId, options);
-    
-    // Tìm format video mp4 chất lượng tốt nhất (ưu tiên 360p hoặc 720p)
-    let selectedFormat = null;
-    const formats = info.formats.filter(format => 
-      format.container === 'mp4' && format.hasVideo && format.hasAudio
-    );
-    
-    // Sắp xếp theo chất lượng
-    formats.sort((a, b) => {
-      const aHeight = a.height || 0;
-      const bHeight = b.height || 0;
-      
-      // Ưu tiên 360p hoặc 720p
-      if (aHeight === 360) return -1;
-      if (bHeight === 360) return 1;
-      if (aHeight === 720) return -1;
-      if (bHeight === 720) return 1;
-      
-      // Nếu không có 360p/720p, ưu tiên chất lượng thấp hơn 720p
-      if (aHeight <= 720 && bHeight > 720) return -1;
-      if (bHeight <= 720 && aHeight > 720) return 1;
-      
-      return aHeight - bHeight;
-    });
-    
-    selectedFormat = formats[0];
-    if (!selectedFormat) {
-      throw new Error("Không tìm thấy định dạng video phù hợp");
-    }
-    
-    console.log(`Đã chọn định dạng: ${selectedFormat.qualityLabel}, bitrate: ${selectedFormat.bitrate}`);
-    
-    // Tải video
-    console.log("Bắt đầu tải video...");
-    const videoReadable = ytdl.downloadFromInfo(info, { 
-      format: selectedFormat,
-      requestOptions: options.requestOptions
-    });
-    
-    // Ghi file
-    console.log(`Đang ghi file tới: ${outputPath}`);
-    await pipeline(videoReadable, fs.createWriteStream(outputPath));
-    
-    console.log("Tải video hoàn tất");
-    
-    // Trả về thông tin video
-    return {
-      title: info.videoDetails.title,
-      dur: parseInt(info.videoDetails.lengthSeconds),
-      viewCount: info.videoDetails.viewCount,
-      likes: info.videoDetails.likes,
-      author: info.videoDetails.author.name,
-      publishDate: info.videoDetails.publishDate,
-      quality: selectedFormat.qualityLabel.replace('p', '')
-    };
+    return await downloadWithPytubeAPI(videoId, outputPath);
   } catch (error) {
     console.error("Tất cả các phương pháp đều thất bại:", error.message);
-    
-    // Nếu tất cả các phương pháp đều thất bại, ném lỗi cuối cùng
-    throw lastError || error;
+    throw new Error("Tất cả các API đều thất bại. Vui lòng thử lại sau.");
   }
 }
 
