@@ -192,11 +192,20 @@ async function downloadFacebookVideo(videoUrl, outputPath) {
 module.exports.handleEvent = async function({ api, event }) {
   const { threadID, messageID, body } = event;
   
-  // Regex để phát hiện tất cả các loại link Facebook (video thông thường, reels, share, watch)
-  const fbRegex = /(?:https?:\/\/)?(?:www\.|m\.)?(?:facebook\.com|fb\.watch|fb\.com)\/(?:watch\/?\?v=|reel\/|share\/v\/|watch\/|story\.php\?story_fbid=|[^\/]+\/videos\/|video\.php\?v=|[^\/]+\/reels\/|reels\/)([^\s&\/\?]+)/i;
+  // Regex được cải tiến để bắt tất cả các loại link Facebook (video thường và reels)
+  // Thêm group capture để dễ dàng debug
+  const fbRegex = /(?:https?:\/\/)?(?:www\.|web\.|m\.)?(?:facebook\.com|fb\.watch|fb\.com)\/(?:(?:watch\/?\?v=|reel\/|share\/v\/|watch\/|story\.php\?story_fbid=|[^\/]+\/videos\/|video\.php\?v=|[^\/]+\/reels\/|reels\/|watch\?v=)([^\s&\/\?]+))/i;
+  
+  console.log(`Kiểm tra tin nhắn: ${body}`);
   
   if (fbRegex.test(body)) {
-    const fbLink = body.match(fbRegex)[0];
+    console.log("Phát hiện link Facebook");
+    const matches = body.match(fbRegex);
+    const fbLink = matches[0];
+    const videoId = matches[1];
+    
+    console.log(`Link đã phát hiện: ${fbLink}`);
+    console.log(`Video ID: ${videoId}`);
     
     try {
       api.sendMessage(`⏳ Đang tải video Facebook, vui lòng đợi (có thể mất đến 1-2 phút)...`, threadID, messageID);
@@ -205,12 +214,19 @@ module.exports.handleEvent = async function({ api, event }) {
       const randomId = generateRandomId();
       const filePath = path.join(__dirname, "..", "..", "..", "cache", `fb-${randomId}.mp4`);
       
+      console.log(`Bắt đầu tải video từ link: ${fbLink}`);
+      console.log(`File sẽ được lưu tại: ${filePath}`);
+      
       // Tải video
       const result = await downloadFacebookVideo(fbLink, filePath);
+      
+      console.log("Tải video thành công");
       
       // Kiểm tra kích thước file trước khi gửi
       const fileStats = fs.statSync(filePath);
       const fileSizeMB = fileStats.size / (1024 * 1024);
+      
+      console.log(`Kích thước file: ${fileSizeMB.toFixed(2)}MB`);
       
       if (fileSizeMB > 25) {
         fs.unlinkSync(filePath);
@@ -218,14 +234,25 @@ module.exports.handleEvent = async function({ api, event }) {
       }
       
       // Gửi video
+      console.log("Đang gửi video vào nhóm...");
       api.sendMessage({
         body: `🎬 Video từ Facebook ${result.title ? `\nTiêu đề: ${result.title}` : ""}`,
         attachment: fs.createReadStream(filePath)
-      }, threadID, () => fs.unlinkSync(filePath), messageID);
+      }, threadID, () => {
+        console.log("Đã gửi video thành công và xóa file tạm");
+        fs.unlinkSync(filePath);
+      }, messageID);
       
     } catch (err) {
       console.error("Lỗi tải video:", err);
       return api.sendMessage(`❎ Đã xảy ra lỗi khi tải video Facebook: ${err.message}. Vui lòng thử lại sau hoặc thử video khác.`, threadID, messageID);
+    }
+  } else {
+    // Debug: Kiểm tra tại sao regex không khớp
+    if (body.includes("facebook.com/reel/") || body.includes("fb.watch")) {
+      console.log("Phát hiện link facebook nhưng regex không khớp");
+      console.log(`Link gốc: ${body}`);
+      console.log(`Kết quả test regex: ${fbRegex.test(body)}`);
     }
   }
 };
